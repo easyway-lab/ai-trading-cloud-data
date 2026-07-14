@@ -25,7 +25,7 @@ except Exception:
     bs = None
 
 
-VERSION = "github-1.2.2"
+VERSION = "github-1.2.3"
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "public" / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -755,6 +755,7 @@ def collect_announcements(rows: list[dict[str, Any]], config: dict[str, Any]) ->
         "generatedAt": now_iso(),
         "windowDays": days,
         "codesChecked": len(codes),
+        "checkedCodes": codes,
         "records": len(values),
         "directFallbackCodes": direct_fallbacks,
         "failures": failures[:50],
@@ -766,13 +767,15 @@ def overlay_announcement_flags(rows: list[dict[str, Any]], announcements: dict[s
     by_code: dict[str, list[dict[str, Any]]] = {}
     for item in announcements.get("items", []):
         by_code.setdefault(item.get("code", ""), []).append(item)
+    checked_codes = {clean_code(code) for code in announcements.get("checkedCodes", [])}
     flagged = 0
     for row in rows:
         items = by_code.get(row["code"], [])
-        row["newsVerified"] = bool(items)
+        checked = row["code"] in checked_codes or bool(items)
+        row["newsVerified"] = checked
         row["announcementRisk"] = any(item.get("riskLevel") == "高" for item in items)
         row["announcementCount"] = len(items)
-        row["announcementCheckedAt"] = announcements.get("generatedAt") if items else None
+        row["announcementCheckedAt"] = announcements.get("generatedAt") if checked else None
         if row["announcementRisk"]:
             flagged += 1
     return flagged
