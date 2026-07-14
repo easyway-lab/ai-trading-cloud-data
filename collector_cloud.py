@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import signal
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -25,7 +26,7 @@ except Exception:
     bs = None
 
 
-VERSION = "github-1.2.3"
+VERSION = "github-1.2.4"
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "public" / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -76,6 +77,23 @@ def load_json(path: Path, fallback: Any) -> Any:
 
 def save_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+
+
+def call_with_timeout(call: Callable[[], Any], label: str, seconds: int) -> Any:
+    if seconds <= 0 or not hasattr(signal, "SIGALRM"):
+        return call()
+
+    def handle_timeout(_signum: int, _frame: Any) -> None:
+        raise TimeoutError(f"{label} timed out after {seconds}s")
+
+    previous = signal.getsignal(signal.SIGALRM)
+    signal.signal(signal.SIGALRM, handle_timeout)
+    signal.alarm(seconds)
+    try:
+        return call()
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 def number(value: Any, default: float = 0.0) -> float:
@@ -347,7 +365,11 @@ def collect_market_rows(
     for key, provider in providers:
         started = time.monotonic()
         try:
-            rows = provider(config)
+            rows = call_with_timeout(
+                lambda provider=provider: provider(config),
+                key,
+                int(config.get("market_source_timeout_seconds", 120)),
+            )
             if len(rows) < minimum:
                 raise RuntimeError(f"only {len(rows)} rows, minimum is {minimum}")
             sources[key] = {
@@ -370,7 +392,12 @@ def refresh_sector_map(config: dict[str, Any]) -> dict[str, Any]:
     if ak is None:
         raise RuntimeError("AKShare is not installed")
     attempts = int(config.get("source_retry_count", 3))
-    boards = retry_frame(ak.stock_board_industry_name_em, "AKShare industry boards", attempts)
+    timeout = int(config.get("sector_source_timeout_seconds", 45))
+    boards = call_with_timeout(
+        lambda: retry_frame(ak.stock_board_industry_name_em, "AKShare industry boards", attempts),
+        "AKShare industry boards",
+        timeout,
+    )
     name_column = first_column(boards, "板块名称", "行业名称", "名称")
     if not name_column:
         raise RuntimeError(f"Industry board columns changed: {list(boards.columns)}")
@@ -380,10 +407,14 @@ def refresh_sector_map(config: dict[str, Any]) -> dict[str, Any]:
     names = [str(value).strip() for value in boards[name_column].dropna().tolist()]
     for index, sector in enumerate(names[: int(config.get("sector_board_limit", 160))], 1):
         try:
-            members = retry_frame(
-                lambda sector=sector: ak.stock_board_industry_cons_em(symbol=sector),
+            members = call_with_timeout(
+                lambda sector=sector: retry_frame(
+                    lambda: ak.stock_board_industry_cons_em(symbol=sector),
+                    f"industry {sector}",
+                    max(1, min(attempts, 2)),
+                ),
                 f"industry {sector}",
-                max(1, min(attempts, 2)),
+                timeout,
             )
             code_column = first_column(members, "代码", "股票代码")
             if not code_column:
@@ -684,13 +715,17 @@ def collect_announcements(rows: list[dict[str, Any]], config: dict[str, Any]) ->
     for index, code in enumerate(codes, 1):
         try:
             try:
-                frame = ak.stock_zh_a_disclosure_report_cninfo(
-                    symbol=code,
-                    market="沪深京",
-                    keyword="",
-                    category="",
-                    start_date=start.strftime("%Y%m%d"),
-                    end_date=end.strftime("%Y%m%d"),
+                frame = call_with_timeout(
+                    lambda code=code: ak.stock_zh_a_disclosure_report_cninfo(
+                        symbol=code,
+                        market="沪深京",
+                        keyword="",
+                        category="",
+                        start_date=start.strftime("%Y%m%d"),
+                        end_date=end.strftime("%Y%m%d"),
+                    ),
+                    f"AKShare CNINFO {code}",
+                    int(config.get("announcement_source_timeout_seconds", 15)),
                 )
                 if not first_column(frame, "公告标题", "标题") or not first_column(frame, "公告链接", "网址"):
                     raise RuntimeError(f"AKShare CNINFO columns changed: {list(frame.columns)}")
@@ -812,9 +847,13 @@ def refresh_technicals(rows: list[dict[str, Any]], config: dict[str, Any]) -> di
     failures = 0
     try:
         for index, code in enumerate(codes, 1):
-            query = bs.query_history_k_data_plus(
-                bs_code(code), "date,high,low,close",
-                start_date=start.isoformat(), end_date=end.isoformat(), frequency="d", adjustflag="2",
+            query = call_with_timeout(
+                lambda code=code: bs.query_history_k_data_plus(
+                    bs_code(code), "date,high,low,close",
+                    start_date=start.isoformat(), end_date=end.isoformat(), frequency="d", adjustflag="2",
+                ),
+                f"BaoStock history {code}",
+                int(config.get("history_source_timeout_seconds", 20)),
             )
             values: list[tuple[float, float, float]] = []
             if query.error_code == "0":
