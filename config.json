@@ -1,5 +1,9 @@
 {
   "request_timeout_seconds": 20,
+  "market_source_timeout_seconds": 120,
+  "sector_source_timeout_seconds": 45,
+  "announcement_source_timeout_seconds": 15,
+  "history_source_timeout_seconds": 20,
   "source_retry_count": 3,
   "market_min_rows": 3000,
   "tencent_batch_size": 180,
