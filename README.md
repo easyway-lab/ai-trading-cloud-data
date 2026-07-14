@@ -1,6 +1,8 @@
 # GitHub 免费云端采集器
 
-这是“全市场AI辅助交易系统”的零成本云端数据方案。GitHub Actions 在交易日定时运行 Python，采集 AKShare、BaoStock、腾讯行情与可选 Finnhub 数据，并把最新结果写入 `public/data`。
+这是“全市场AI辅助交易系统”的零成本云端数据方案。GitHub Actions 在交易日定时运行 Python，按 AKShare 东方财富、AKShare 新浪、BaoStock 股票池加腾讯行情的顺序自动切换全市场数据源，并把最新结果写入 `public/data`。Finnhub 外围市场数据为可选项。
+
+采集器会用最少 3000 条有效行情作为成功门槛。全部行情源失效时，旧的有效 `snapshot.json` 不会被空数据覆盖，`health.json` 会标记 `stale=true`，同时 Actions 任务会显示失败，避免“绿色任务、空白数据”的假成功。
 
 ## 一次性安装
 
@@ -34,3 +36,4 @@
 - `config.json` 中的腾讯代码只建议填写普通观察标的；持仓和成本继续保留在浏览器本地。
 - GitHub 定时任务可能延迟，因此适合盘前、盘中阶段性扫描和盘后复盘，不作为秒级实盘行情源。
 - Actions失败时旧快照仍然保留，网页不会清空已有数据。
+- BaoStock 历史技术指标覆盖沪市主板、深市主板、创业板和科创板；北交所仍参与实时全市场扫描，但暂不使用 BaoStock 计算历史均线。
