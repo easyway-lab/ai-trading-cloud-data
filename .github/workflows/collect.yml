@@ -1,6 +1,13 @@
 name: Collect A-share market data
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "collector_cloud.py"
+      - "config.json"
+      - "requirements.txt"
+      - ".github/workflows/collect.yml"
   workflow_dispatch:
     inputs:
       refresh_history:
