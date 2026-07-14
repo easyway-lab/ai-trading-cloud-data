@@ -25,7 +25,7 @@ except Exception:
     bs = None
 
 
-VERSION = "github-1.2.0"
+VERSION = "github-1.2.1"
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "public" / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -89,7 +89,7 @@ def number(value: Any, default: float = 0.0) -> float:
 
 def clean_code(value: Any) -> str:
     code = str(value).strip().upper()
-    code = re.sub(r"^(SH|SZ|BJ)", "", code)
+    code = re.sub(r"^(SH|SZ|BJ)[.\s_-]?", "", code)
     code = re.sub(r"\.(SH|SZ|BJ|NQ)$", "", code)
     return code.zfill(6) if code.isdigit() else code
 
@@ -410,6 +410,39 @@ def refresh_sector_map(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def refresh_baostock_sector_map(config: dict[str, Any]) -> dict[str, Any]:
+    if bs is None:
+        raise RuntimeError("BaoStock is not installed")
+    login = bs.login()
+    if login.error_code != "0":
+        raise RuntimeError(f"BaoStock login failed: {login.error_msg}")
+
+    items: dict[str, str] = {}
+    try:
+        query = bs.query_stock_industry()
+        if query.error_code != "0":
+            raise RuntimeError(f"BaoStock industry query failed: {query.error_msg}")
+        fields = list(query.fields)
+        while query.next():
+            item = dict(zip(fields, query.get_row_data()))
+            code = clean_code(item.get("code", ""))
+            sector = str(item.get("industry", "")).strip()
+            if code.isdigit() and sector and sector != "None" and market_name(code) != "未标注":
+                items[code] = sector
+    finally:
+        bs.logout()
+
+    if len(items) < int(config.get("sector_min_rows", 3000)):
+        raise RuntimeError(f"BaoStock industry map only contains {len(items)} stocks")
+    return {
+        "schemaVersion": "1.0",
+        "generatedAt": now_iso(),
+        "source": "BaoStock行业分类",
+        "records": len(items),
+        "items": items,
+    }
+
+
 def load_sector_map(config: dict[str, Any], force: bool = False) -> tuple[dict[str, Any], bool, str | None]:
     cached = load_json(SECTOR_MAP_PATH, {"items": {}})
     cached_date = str(cached.get("generatedAt", ""))[:10]
@@ -422,14 +455,21 @@ def load_sector_map(config: dict[str, Any], force: bool = False) -> tuple[dict[s
             refresh_due = True
     if not refresh_due:
         return cached, False, None
-    try:
-        fresh = refresh_sector_map(config)
-        save_json(SECTOR_MAP_PATH, fresh)
-        return fresh, True, None
-    except Exception as error:
-        if cached.get("items"):
-            return cached, False, str(error)
-        return {"items": {}}, False, str(error)
+    errors: list[str] = []
+    for source_name, refresher in (
+        ("AKShare东方财富", refresh_sector_map),
+        ("BaoStock", refresh_baostock_sector_map),
+    ):
+        try:
+            fresh = refresher(config)
+            save_json(SECTOR_MAP_PATH, fresh)
+            return fresh, True, None
+        except Exception as error:
+            errors.append(f"{source_name}: {error}")
+    message = " | ".join(errors)
+    if cached.get("items"):
+        return cached, False, message
+    return {"items": {}}, False, message
 
 
 def overlay_sectors(rows: list[dict[str, Any]], sector_payload: dict[str, Any]) -> tuple[int, int]:
