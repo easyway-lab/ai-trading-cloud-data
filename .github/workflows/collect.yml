@@ -7,6 +7,7 @@ on:
       - "collector_cloud.py"
       - "config.json"
       - "requirements.txt"
+      - "public/data/wencai_sector_overrides.json"
       - ".github/workflows/collect.yml"
   workflow_dispatch:
     inputs:
@@ -14,6 +15,11 @@ on:
         description: Refresh BaoStock technical history
         required: false
         default: true
+        type: boolean
+      refresh_sectors:
+        description: Refresh full-market industry mapping
+        required: false
+        default: false
         type: boolean
   schedule:
     - cron: "26 1 * * 1-5"
@@ -50,11 +56,10 @@ jobs:
         env:
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
         run: |
-          if [ "${{ github.event.inputs.refresh_history }}" = "true" ]; then
-            python collector_cloud.py --refresh-history
-          else
-            python collector_cloud.py
-          fi
+          ARGS=""
+          if [ "${{ github.event.inputs.refresh_history }}" = "true" ]; then ARGS="$ARGS --refresh-history"; fi
+          if [ "${{ github.event.inputs.refresh_sectors }}" = "true" ]; then ARGS="$ARGS --refresh-sectors"; fi
+          python collector_cloud.py $ARGS
       - name: Publish latest snapshots
         if: always()
         run: |

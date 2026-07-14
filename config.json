@@ -5,6 +5,21 @@
   "tencent_batch_size": 180,
   "history_calendar_days": 100,
   "history_candidate_limit": 350,
+  "sector_refresh_days": 7,
+  "sector_board_limit": 160,
+  "sector_min_rows": 3000,
+  "announcement_days": 7,
+  "announcement_candidate_limit": 35,
+  "announcement_watchlist": ["000063"],
   "tencent_watchlist": ["000063"],
+  "index_symbols": {
+    "sh000001": "上证指数",
+    "sz399001": "深证成指",
+    "sz399006": "创业板指",
+    "sh000300": "沪深300",
+    "sh000688": "科创50",
+    "sh000852": "中证1000",
+    "bj899050": "北证50"
+  },
   "finnhub_symbols": ["SPY", "QQQ", "DIA", "AAPL", "NVDA", "TSLA"]
 }
