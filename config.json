@@ -1,0 +1,7 @@
+{
+  "request_timeout_seconds": 20,
+  "history_calendar_days": 100,
+  "history_candidate_limit": 350,
+  "tencent_watchlist": ["000063"],
+  "finnhub_symbols": ["SPY", "QQQ", "DIA", "AAPL", "NVDA", "TSLA"]
+}

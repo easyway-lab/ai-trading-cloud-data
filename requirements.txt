@@ -1,0 +1,4 @@
+akshare>=1.17.0
+baostock>=0.8.9
+pandas>=2.2.0
+requests>=2.31.0
