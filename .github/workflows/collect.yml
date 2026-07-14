@@ -38,6 +38,8 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Collect and score
+        id: collect
+        continue-on-error: true
         env:
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
         run: |
@@ -47,6 +49,7 @@ jobs:
             python collector_cloud.py
           fi
       - name: Publish latest snapshots
+        if: always()
         run: |
           git config user.name "ai-trading-data-bot"
           git config user.email "actions@users.noreply.github.com"
@@ -57,3 +60,8 @@ jobs:
             git commit -m "data: refresh market snapshot"
             git push
           fi
+      - name: Mark unusable collection as failed
+        if: steps.collect.outcome == 'failure'
+        run: |
+          echo "No fresh full-market snapshot was collected. Previous valid data was preserved."
+          exit 1
