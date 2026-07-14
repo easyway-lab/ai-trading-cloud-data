@@ -1,6 +1,6 @@
 # GitHub 免费云端采集器
 
-这是“全市场AI辅助交易系统”的零成本云端数据方案。GitHub Actions 在交易日定时运行 Python，按 AKShare 东方财富、AKShare 新浪、BaoStock 股票池加腾讯行情的顺序自动切换全市场数据源，并把最新结果写入 `public/data`。Finnhub 外围市场数据为可选项。
+这是“全市场AI辅助交易系统”的零成本云端数据方案。GitHub Actions 在交易日定时运行 Python，按 AKShare 东方财富、AKShare 新浪、BaoStock 股票池加腾讯行情的顺序自动切换全市场数据源，并把最新结果写入 `public/data`。行业映射优先使用 AKShare 东方财富行业板块，失败时自动切换 BaoStock 行业分类。Finnhub 外围市场数据为可选项。
 
 1.2 版同时自动生成：
 
