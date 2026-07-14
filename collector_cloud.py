@@ -6,7 +6,7 @@ import json
 import os
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
@@ -25,7 +25,7 @@ except Exception:
     bs = None
 
 
-VERSION = "github-1.2.1"
+VERSION = "github-1.2.2"
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "public" / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -602,6 +602,71 @@ def announcement_risk(title: str) -> tuple[str, list[str]]:
     return ("低" if positive else "中"), positive
 
 
+def fetch_cninfo_direct(
+    code: str,
+    start: date,
+    end: date,
+    config: dict[str, Any],
+    stock_org_map: dict[str, str],
+) -> pd.DataFrame:
+    org_id = stock_org_map.get(code)
+    if not org_id:
+        raise RuntimeError("stock orgId is unavailable")
+    timeout = int(config.get("request_timeout_seconds", 20))
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": "https://www.cninfo.com.cn/",
+        "Origin": "https://www.cninfo.com.cn",
+        "X-Requested-With": "XMLHttpRequest",
+    }
+    base_payload = {
+        "pageSize": "30", "column": "szse", "tabName": "fulltext", "plate": "",
+        "stock": f"{code},{org_id}", "searchkey": "", "secid": "", "category": "",
+        "trade": "", "seDate": f"{start.isoformat()}~{end.isoformat()}",
+        "sortName": "", "sortType": "", "isHLtitle": "true",
+    }
+    response = requests.post(
+        "https://www.cninfo.com.cn/new/hisAnnouncement/query",
+        data={**base_payload, "pageNum": "1"},
+        headers=headers,
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    first_page = response.json()
+    total = int(first_page.get("totalAnnouncement") or 0)
+    pages = max(1, (total + 29) // 30)
+    announcements = list(first_page.get("announcements") or [])
+    for page in range(2, pages + 1):
+        response = requests.post(
+            "https://www.cninfo.com.cn/new/hisAnnouncement/query",
+            data={**base_payload, "pageNum": str(page)},
+            headers=headers,
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        announcements.extend(response.json().get("announcements") or [])
+
+    rows: list[dict[str, Any]] = []
+    for item in announcements:
+        item_code = clean_code(item.get("secCode") or code)
+        timestamp = number(item.get("announcementTime"))
+        published = datetime.fromtimestamp(timestamp / 1000, CN_TZ).strftime("%Y-%m-%d %H:%M:%S") if timestamp else ""
+        announcement_id = str(item.get("announcementId") or "")
+        item_org_id = str(item.get("orgId") or org_id)
+        rows.append({
+            "代码": item_code,
+            "简称": str(item.get("secName") or item_code),
+            "公告标题": str(item.get("announcementTitle") or ""),
+            "公告时间": published,
+            "公告链接": (
+                "https://www.cninfo.com.cn/new/disclosure/detail?"
+                f"stockCode={item_code}&announcementId={announcement_id}&orgId={item_org_id}"
+                f"&announcementTime={published}"
+            ),
+        })
+    return pd.DataFrame(rows, columns=["代码", "简称", "公告标题", "公告时间", "公告链接"])
+
+
 def collect_announcements(rows: list[dict[str, Any]], config: dict[str, Any]) -> dict[str, Any]:
     if ak is None:
         raise RuntimeError("AKShare is not installed")
@@ -613,17 +678,37 @@ def collect_announcements(rows: list[dict[str, Any]], config: dict[str, Any]) ->
     codes = list(dict.fromkeys([*watchlist, *candidates]))
     records: list[dict[str, Any]] = []
     failures: list[str] = []
+    stock_org_map: dict[str, str] | None = None
+    direct_fallbacks = 0
 
     for index, code in enumerate(codes, 1):
         try:
-            frame = ak.stock_zh_a_disclosure_report_cninfo(
-                symbol=code,
-                market="沪深京",
-                keyword="",
-                category="",
-                start_date=start.strftime("%Y%m%d"),
-                end_date=end.strftime("%Y%m%d"),
-            )
+            try:
+                frame = ak.stock_zh_a_disclosure_report_cninfo(
+                    symbol=code,
+                    market="沪深京",
+                    keyword="",
+                    category="",
+                    start_date=start.strftime("%Y%m%d"),
+                    end_date=end.strftime("%Y%m%d"),
+                )
+                if not first_column(frame, "公告标题", "标题") or not first_column(frame, "公告链接", "网址"):
+                    raise RuntimeError(f"AKShare CNINFO columns changed: {list(frame.columns)}")
+            except Exception:
+                if stock_org_map is None:
+                    stock_response = requests.get(
+                        "https://www.cninfo.com.cn/new/data/szse_stock.json",
+                        headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.cninfo.com.cn/"},
+                        timeout=int(config.get("request_timeout_seconds", 20)),
+                    )
+                    stock_response.raise_for_status()
+                    stock_org_map = {
+                        clean_code(item.get("code", "")): str(item.get("orgId", ""))
+                        for item in stock_response.json().get("stockList", [])
+                        if clean_code(item.get("code", "")).isdigit()
+                    }
+                frame = fetch_cninfo_direct(code, start, end, config, stock_org_map)
+                direct_fallbacks += 1
             code_column = first_column(frame, "代码")
             name_column = first_column(frame, "简称", "名称")
             title_column = first_column(frame, "公告标题", "标题")
@@ -671,6 +756,7 @@ def collect_announcements(rows: list[dict[str, Any]], config: dict[str, Any]) ->
         "windowDays": days,
         "codesChecked": len(codes),
         "records": len(values),
+        "directFallbackCodes": direct_fallbacks,
         "failures": failures[:50],
         "items": values,
     }
@@ -892,7 +978,10 @@ def main() -> None:
             save_json(ANNOUNCEMENTS_PATH, announcements)
             sources["cninfo_announcements"] = {
                 "status": "ok",
-                "message": f"巨潮核验{announcements.get('codesChecked', 0)}只，公告{announcements.get('records', 0)}条",
+                "message": (
+                    f"巨潮核验{announcements.get('codesChecked', 0)}只，公告{announcements.get('records', 0)}条，"
+                    f"直连兜底{announcements.get('directFallbackCodes', 0)}只"
+                ),
                 "updatedAt": now_iso(),
                 "records": announcements.get("records", 0),
             }
