@@ -1,5 +1,8 @@
 {
   "request_timeout_seconds": 20,
+  "source_retry_count": 3,
+  "market_min_rows": 3000,
+  "tencent_batch_size": 180,
   "history_calendar_days": 100,
   "history_candidate_limit": 350,
   "tencent_watchlist": ["000063"],
