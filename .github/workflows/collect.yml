@@ -1,0 +1,59 @@
+name: Collect A-share market data
+
+on:
+  workflow_dispatch:
+    inputs:
+      refresh_history:
+        description: Refresh BaoStock technical history
+        required: false
+        default: true
+        type: boolean
+  schedule:
+    - cron: "26 1 * * 1-5"
+    - cron: "36 1 * * 1-5"
+    - cron: "32 2 * * 1-5"
+    - cron: "32 5 * * 1-5"
+    - cron: "47 6 * * 1-5"
+    - cron: "12 7 * * 1-5"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: market-data-collector
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Collect and score
+        env:
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+        run: |
+          if [ "${{ github.event.inputs.refresh_history }}" = "true" ]; then
+            python collector_cloud.py --refresh-history
+          else
+            python collector_cloud.py
+          fi
+      - name: Publish latest snapshots
+        run: |
+          git config user.name "ai-trading-data-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add public/data
+          if git diff --cached --quiet; then
+            echo "No data changes"
+          else
+            git commit -m "data: refresh market snapshot"
+            git push
+          fi
