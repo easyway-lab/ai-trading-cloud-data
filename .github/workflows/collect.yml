@@ -22,12 +22,20 @@ on:
         default: false
         type: boolean
   schedule:
-    - cron: "26 1 * * 1-5"
-    - cron: "36 1 * * 1-5"
-    - cron: "32 2 * * 1-5"
-    - cron: "32 5 * * 1-5"
-    - cron: "47 6 * * 1-5"
-    - cron: "12 7 * * 1-5"
+    # China trading days. Intraday snapshots run about every 15 minutes.
+    - cron: "22 9 * * 1-5"
+      timezone: "Asia/Shanghai"
+    - cron: "37,52 9 * * 1-5"
+      timezone: "Asia/Shanghai"
+    - cron: "7,22,37,52 10 * * 1-5"
+      timezone: "Asia/Shanghai"
+    - cron: "7,22 11 * * 1-5"
+      timezone: "Asia/Shanghai"
+    - cron: "7,22,37,52 13-14 * * 1-5"
+      timezone: "Asia/Shanghai"
+    # Post-close run also refreshes BaoStock technical history.
+    - cron: "12 15 * * 1-5"
+      timezone: "Asia/Shanghai"
 
 permissions:
   contents: write
@@ -56,10 +64,18 @@ jobs:
         timeout-minutes: 20
         env:
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
+          MANUAL_REFRESH_HISTORY: ${{ github.event.inputs.refresh_history }}
+          MANUAL_REFRESH_SECTORS: ${{ github.event.inputs.refresh_sectors }}
         run: |
           ARGS=""
-          if [ "${{ github.event.inputs.refresh_history }}" = "true" ]; then ARGS="$ARGS --refresh-history"; fi
-          if [ "${{ github.event.inputs.refresh_sectors }}" = "true" ]; then ARGS="$ARGS --refresh-sectors"; fi
+          if [ "$MANUAL_REFRESH_HISTORY" = "true" ] || [ "$EVENT_SCHEDULE" = "12 15 * * 1-5" ]; then
+            ARGS="$ARGS --refresh-history"
+          fi
+          if [ "$MANUAL_REFRESH_SECTORS" = "true" ]; then
+            ARGS="$ARGS --refresh-sectors"
+          fi
+          echo "Collector schedule: ${EVENT_SCHEDULE:-manual-or-push}; args: ${ARGS:-none}"
           python collector_cloud.py $ARGS
       - name: Publish latest snapshots
         if: always()
