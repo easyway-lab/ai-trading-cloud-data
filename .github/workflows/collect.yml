@@ -88,7 +88,16 @@ jobs:
             echo "No data changes"
           else
             git commit -m "data: refresh market snapshot"
-            git push
+            for attempt in 1 2 3; do
+              if git pull --rebase origin main && git push origin HEAD:main; then
+                exit 0
+              fi
+              git rebase --abort || true
+              echo "Publish attempt $attempt failed; retrying against latest main"
+              sleep $((attempt * 3))
+            done
+            echo "Unable to publish snapshots after 3 attempts"
+            exit 1
           fi
       - name: Mark unusable collection as failed
         if: steps.collect.outcome == 'failure'
