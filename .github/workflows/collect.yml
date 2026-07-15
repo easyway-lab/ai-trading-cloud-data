@@ -8,6 +8,7 @@ on:
       - "config.json"
       - "requirements.txt"
       - "public/data/wencai_sector_overrides.json"
+      - "public/data/wencai_enrichment.part*.b64"
       - ".github/workflows/collect.yml"
   workflow_dispatch:
     inputs:
