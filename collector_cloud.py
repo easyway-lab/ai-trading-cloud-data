@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import gzip
 import hashlib
 import json
 import os
@@ -26,7 +28,7 @@ except Exception:
     bs = None
 
 
-VERSION = "github-1.2.4"
+VERSION = "github-1.3.0"
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "public" / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -39,6 +41,7 @@ MARKET_OVERVIEW_PATH = DATA_DIR / "market_overview.json"
 ANNOUNCEMENTS_PATH = DATA_DIR / "announcements.json"
 SECTOR_MAP_PATH = DATA_DIR / "sector_map.json"
 WENCAI_SECTOR_PATH = DATA_DIR / "wencai_sector_overrides.json"
+WENCAI_ENRICHMENT_PATTERN = "wencai_enrichment.part*.b64"
 CN_TZ = ZoneInfo("Asia/Shanghai")
 
 INDEX_SYMBOLS = {
@@ -71,6 +74,15 @@ def now_iso() -> str:
 def load_json(path: Path, fallback: Any) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return fallback
+
+
+def load_gzip_json(paths: list[Path], fallback: Any) -> Any:
+    try:
+        encoded = "".join(path.read_text(encoding="ascii") for path in paths)
+        compressed = base64.b64decode(encoded, validate=True)
+        return json.loads(gzip.decompress(compressed).decode("utf-8"))
     except Exception:
         return fallback
 
@@ -521,6 +533,98 @@ def overlay_sectors(rows: list[dict[str, Any]], sector_payload: dict[str, Any]) 
     return covered, overridden
 
 
+def overlay_wencai_enrichment(
+    rows: list[dict[str, Any]], payload: dict[str, Any],
+) -> dict[str, Any]:
+    items = payload.get("items", {}) if isinstance(payload, dict) else {}
+    overrides_payload = load_json(WENCAI_SECTOR_PATH, {"items": {}})
+    overrides = overrides_payload.get("items", {}) if isinstance(overrides_payload, dict) else {}
+    classified = 0
+    fundamentals = 0
+    st_count = 0
+    for row in rows:
+        item = items.get(row["code"])
+        if not isinstance(item, dict):
+            continue
+        row["wencaiVerified"] = True
+        row["wencaiImportedAt"] = payload.get("generatedAt")
+        row["wencaiQuoteDate"] = payload.get("quoteDate")
+        row["industryLevel1"] = item.get("i1")
+        row["industryLevel2"] = item.get("i2")
+        row["industryLevel3"] = item.get("i3")
+        row["swIndustryLevel1"] = item.get("sw1")
+        row["swIndustryLevel2"] = item.get("sw2")
+        row["industryPath"] = item.get("path")
+        row["listingBoard"] = item.get("board")
+        row["isST"] = bool(item.get("st"))
+        if row["isST"]:
+            st_count += 1
+
+        if row["code"] not in overrides:
+            wencai_sector = item.get("i2") or item.get("i1")
+            if wencai_sector:
+                row["sector"] = str(wencai_sector).strip()
+        if row.get("sector") and row["sector"] != "未标注":
+            classified += 1
+
+        if "fs" in item:
+            row["fundamentalScore"] = round(number(item.get("fs")))
+            row["marketCapBillion"] = round(number(item.get("mc")) / 100_000_000, 4)
+            row["floatMarketCapBillion"] = round(number(item.get("fmc")) / 100_000_000, 4)
+            row["peTTM"] = number(item.get("pe"))
+            row["pb"] = number(item.get("pb"))
+            row["roePercent"] = number(item.get("roe"))
+            row["revenueGrowthPercent"] = number(item.get("rev"))
+            row["netProfitGrowthPercent"] = number(item.get("profit"))
+            row["fundamentalSource"] = "同花顺问财用户导入"
+            fundamentals += 1
+
+    return {
+        "classified": classified,
+        "fundamentals": fundamentals,
+        "stCount": st_count,
+        "records": len(items),
+        "quoteDate": payload.get("quoteDate"),
+        "conceptRecords": int(payload.get("conceptRecords", 0)),
+    }
+
+
+def overlay_wencai_technicals(
+    rows: list[dict[str, Any]], payload: dict[str, Any],
+) -> int:
+    quote_date = str(payload.get("quoteDate", ""))
+    if quote_date != now_cn().date().isoformat():
+        return 0
+    items = payload.get("items", {}) if isinstance(payload, dict) else {}
+    covered = 0
+    for row in rows:
+        item = items.get(row["code"])
+        if not isinstance(item, dict) or number(item.get("ma20")) <= 0:
+            continue
+        for target, source in (
+            ("ma5", "ma5"), ("ma10", "ma10"), ("ma20", "ma20"),
+            ("high20", "h20"), ("low20", "l20"),
+        ):
+            if number(item.get(source)) > 0:
+                row[target] = number(item[source])
+        if number(item.get("vr")) > 0:
+            row["volumeRatio"] = number(item["vr"])
+        row["technicalSource"] = "同花顺问财用户导入"
+        row["technicalAsOfDate"] = quote_date
+        covered += 1
+    return covered
+
+
+def technical_coverage(rows: list[dict[str, Any]]) -> float:
+    covered = sum(
+        1 for row in rows
+        if number(row.get("ma5")) > 0
+        and number(row.get("ma10")) > 0
+        and number(row.get("ma20")) > 0
+    )
+    return covered / len(rows) if rows else 0
+
+
 def fetch_tencent_indices(config: dict[str, Any]) -> list[dict[str, Any]]:
     symbols = config.get("index_symbols", INDEX_SYMBOLS)
     if isinstance(symbols, list):
@@ -827,7 +931,7 @@ def history_candidates(rows: list[dict[str, Any]], limit: int) -> list[str]:
             continue
         if turnover and not 0.5 <= turnover <= 18:
             continue
-        if "ST" in row["name"].upper():
+        if row.get("isST") or "ST" in row["name"].upper():
             continue
         eligible.append(row)
     eligible.sort(key=lambda row: (row["amountBillion"], row["volumeRatio"]), reverse=True)
@@ -952,11 +1056,15 @@ def main() -> None:
     if rows:
         sector_payload, sector_refreshed, sector_error = load_sector_map(config, args.refresh_sectors)
         sector_covered, sector_overridden = overlay_sectors(rows, sector_payload)
+        wencai_payload = load_gzip_json(sorted(DATA_DIR.glob(WENCAI_ENRICHMENT_PATTERN)), {})
+        wencai_stats = overlay_wencai_enrichment(rows, wencai_payload)
+        sector_covered = sum(1 for row in rows if row.get("sector") and row["sector"] != "未标注")
         sector_coverage = sector_covered / len(rows) if rows else 0
+        wencai_coverage = wencai_stats["classified"] / len(rows) if rows else 0
         sources["industry_map"] = {
             "status": "ok" if sector_covered else "error",
             "message": (
-                f"行业覆盖{sector_covered}只，问财覆盖{sector_overridden}只"
+                f"行业覆盖{sector_covered}只，问财分类{wencai_stats['classified']}只，手工校正{sector_overridden}只"
                 + ("，本次已刷新" if sector_refreshed else "，复用缓存")
                 + (f"；刷新失败但已保留旧映射：{sector_error}" if sector_error else "")
             ),
@@ -965,6 +1073,24 @@ def main() -> None:
         }
         if sector_error and not sector_covered:
             errors.append(f"industry_map: {sector_error}")
+        if wencai_stats["records"]:
+            sources["wencai_import"] = {
+                "status": "ok",
+                "message": (
+                    f"静态分类{wencai_stats['records']}只，匹配当前行情{wencai_stats['classified']}只，"
+                    f"财务字段{wencai_stats['fundamentals']}只，ST标记{wencai_stats['stCount']}只，"
+                    f"概念字段{wencai_stats['conceptRecords']}只"
+                ),
+                "updatedAt": now_iso(),
+                "records": wencai_stats["records"],
+                "quoteDate": wencai_stats["quoteDate"],
+            }
+        else:
+            sources["wencai_import"] = {
+                "status": "unconfigured",
+                "message": "未导入同花顺问财增强数据",
+                "updatedAt": now_iso(), "records": 0,
+            }
 
         overlay_previous_technicals(rows, previous)
         technicals = load_json(TECHNICAL_PATH, {"items": {}})
@@ -1013,7 +1139,15 @@ def main() -> None:
                 errors.append(f"tencent_watchlist: {error}")
                 sources["tencent_watchlist"] = {"status": "error", "message": str(error), "updatedAt": now_iso()}
 
-        coverage = overlay_technicals(rows, technicals)
+        overlay_technicals(rows, technicals)
+        wencai_technical_count = overlay_wencai_technicals(rows, wencai_payload)
+        coverage = technical_coverage(rows)
+        if wencai_stats["records"]:
+            if wencai_technical_count:
+                sources["wencai_import"]["message"] += f"，当日技术结构{wencai_technical_count}只"
+            else:
+                sources["wencai_import"]["message"] += "，技术结构因非当日快照未覆盖"
+            sources["wencai_import"]["technicalRecords"] = wencai_technical_count
 
         try:
             announcements = collect_announcements(rows, config)
@@ -1065,9 +1199,13 @@ def main() -> None:
         }
 
         snapshot = {
-            "schemaVersion": "1.2", "collectorVersion": VERSION, "generatedAt": now_iso(),
+            "schemaVersion": "1.3", "collectorVersion": VERSION, "generatedAt": now_iso(),
             "marketSource": active_market_source, "technicalCoverage": round(coverage, 4),
             "sectorCoverage": round(sector_coverage, 4),
+            "wencaiCoverage": round(wencai_coverage, 4),
+            "wencaiFundamentalCoverage": round(wencai_stats["fundamentals"] / len(rows), 4),
+            "wencaiTechnicalRecords": wencai_technical_count,
+            "wencaiQuoteDate": wencai_stats["quoteDate"],
             "announcementRiskCount": announcement_risk_count,
             "rowCount": len(rows), "rows": rows,
         }
@@ -1100,6 +1238,10 @@ def main() -> None:
         "lastOverviewRefresh": load_json(MARKET_OVERVIEW_PATH, {}).get("generatedAt"),
         "lastAnnouncementRefresh": load_json(ANNOUNCEMENTS_PATH, {}).get("generatedAt"),
         "rows": usable_rows, "technicalCoverage": coverage, "sectorCoverage": sector_coverage,
+        "wencaiCoverage": number(snapshot.get("wencaiCoverage")),
+        "wencaiFundamentalCoverage": number(snapshot.get("wencaiFundamentalCoverage")),
+        "wencaiTechnicalRecords": int(snapshot.get("wencaiTechnicalRecords", 0)),
+        "wencaiQuoteDate": snapshot.get("wencaiQuoteDate"),
         "announcementRecords": len(load_json(ANNOUNCEMENTS_PATH, {}).get("items", [])),
         "runningJob": None,
         "lastError": " | ".join(errors) if errors else None, "sources": sources,
